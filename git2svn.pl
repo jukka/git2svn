@@ -52,6 +52,36 @@ svn('mkdir', 'tags');
 svn('commit', '-m', 'mkdir {trunk,branches,tags}');
 my %branches = ( trunk => 'trunk' );
 
+sub listdir {
+    my $dir = shift;
+    my %map = ();
+    opendir my $dh, $dir or die "opendir: $!";
+    for my $file (grep { !/^\.{1,2}$/ } readdir $dh) {
+        my ($dev, $ino, $mode, $nlink, $uid, $gid, $rdev, $size,
+            $atime, $mtime, $ctime, $blksize, $blocks) = stat("$dir/$file")
+            or die "stat: $!";
+        $map{$file} = { size => $size, mtime => $mtime, file => -f _ };
+    }
+    closedir $dh;
+    return %map;
+}
+
+sub sync {
+    my $dir = shift;
+    my %source = listdir("git/$dir");
+    delete $source{'.git'} unless $dir;
+    my %target = listdir("svn/$dir");
+    delete $target{'.svn'};
+
+    for my $file (keys %target) {
+        svn('delete', "svn/$dir/$file") unless exists $source{$file};
+    }
+
+    for my $file (keys %source) {
+        
+    }
+}
+
 sub commit {
     my $commit = shift;
     my $branch = shift;
