@@ -10,7 +10,15 @@ sub run {
     my ($cmd, @args) = @_;
     print join(' ', @_), "\n";
     chdir($cmd) or die "chdir: $!";
-    system($cmd, @args) == 0 or die "$cmd: $?";
+    if ($cmd eq 'svn' and $args[0] eq 'commit') {
+        system($cmd, @args) == 0
+            or do {
+                system('rm', '-rf', 'trunk',  'branches', 'tags');
+                system('svn', 'update');
+            };
+    } else {
+        system($cmd, @args) == 0 or die "$cmd: $?";
+    }
     chdir('..') or die "chdir: $!";
 }
 
@@ -60,7 +68,7 @@ my %branches = ( trunk => 'trunk' );
 sub listdir {
     my $dir = shift;
     my %map = ();
-    opendir my $dh, $dir or die "opendir: $!";
+    opendir my $dh, $dir or die "opendir($dir): $!";
     for my $file (grep { !/^\.{1,2}$/ } readdir $dh) {
         my ($dev, $ino, $mode, $nlink, $uid, $gid, $rdev, $size,
             $atime, $mtime, $ctime, $blksize, $blocks) = stat("$dir/$file")
@@ -119,14 +127,31 @@ sub commit {
     my $dir = $branches{$branch};
     unless ($dir) {
         $dir = "branches/$branch";
-        my $r = $first->{revision};
-        my $b = $first->{branch};
-        svn('copy', '-r', $r, "$branches{$b}\@$r", $dir);
+        if ($first) {
+            my $r = $first->{revision};
+            my $b = $first->{branch};
+            svn('copy', '-r', $r, "$branches{$b}\@$r", $dir);
+        } else {
+            svn('mkdir', $dir);
+        }
         $branches{$branch} = $dir;
     }
 
     git('checkout', $commit->{hash});
     sync($dir, "");
+
+    for my $c (@rest) {
+        my $removebranch = $c->{branch} ne 'trunk' and $c->{branch} ne $branch;
+        for my $child (@{$c->{children}}) {
+            $removebranch = 0
+                if $child->{hash} ne $commit->{hash} and not $child->{revision};
+        }
+        if ($removebranch) {
+            svn('delete', $branches{$c->{branch}});
+            delete $branches{$c->{branch}};
+        }
+    }
+    
     svn('commit', '-m', $commit->{hash});
 
     `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
