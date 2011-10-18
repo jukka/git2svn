@@ -6,25 +6,27 @@ use warnings;
 my $GIT = shift;
 my $SVN = shift;
 
-sub git {
-    system("git", @_) == 0 or die "git: $?";
+sub run {
+    my ($cmd, @args) = @_;
+    print join(' ', @_), "\n";
+    chdir($cmd) or die "chdir: $!";
+    system($cmd, @args) == 0 or die "$cmd: $?";
+    chdir('..') or die "chdir: $!";
 }
 
-sub svn {
-    system("svn", @_) == 0 or die "svn: $?";
-}
+sub git { run('git', @_); }
+sub svn { run('svn', @_); }
 
-git('clone', $GIT, 'git');
-chdir('git') or die "chdir: $!";
-my $git = `pwd`;
+system('git', 'clone', $GIT, 'git') == 0 or die "git: $?";
+
 my %commits = ();
-my $first;
-open LOG, 'git log --format=format:%H,%P,%ci|'
+my $head;
+open LOG, '(GIT_DIR=git/.git git log --format=format:%H,%P,%ci)|'
     or die "open: $!";
 for my $log (<LOG>) {
     chomp $log;
     my ($hash, $parents, $date) = split /,/, $log;
-    $first = $hash unless $first;
+    $head = $hash unless $head;
 
     $commits{$hash} = {
         hash => $hash,
@@ -42,14 +44,17 @@ for my $commit (values %commits) {
     }
 }
 close LOG;
-chdir('..') or die "chdir: $!";
 
-svn('checkout', $SVN, 'svn');
-chdir('svn') or die "chdir: $!";
+my $pwd = `pwd`;
+chomp($pwd);
+system('svnadmin', 'create', 'repo') == 0 or die "svnadmin: $?";
+system('svn', 'checkout', "file://$pwd/repo", 'svn') == 0 or die "svn: $?";
+
 svn('mkdir', 'trunk');
 svn('mkdir', 'branches');
 svn('mkdir', 'tags');
 svn('commit', '-m', 'mkdir {trunk,branches,tags}');
+
 my %branches = ( trunk => 'trunk' );
 
 sub listdir {
@@ -66,19 +71,35 @@ sub listdir {
     return %map;
 }
 
+sub copy {
+    system('cp', '-p', '-r', @_) == 0 or die "cp: $?";
+}
+
 sub sync {
-    my $dir = shift;
-    my %source = listdir("git/$dir");
+    my ($branch, $dir) = @_;
+    my %source = listdir("git$dir");
     delete $source{'.git'} unless $dir;
-    my %target = listdir("svn/$dir");
+    my %target = listdir("svn/$branch$dir");
     delete $target{'.svn'};
 
     for my $file (keys %target) {
-        svn('delete', "svn/$dir/$file") unless exists $source{$file};
+        svn('delete', "$branch$dir/$file") unless exists $source{$file};
     }
 
     for my $file (keys %source) {
-        
+        my $sfile = $source{$file};
+        my $tfile = $target{$file};
+        if (not $tfile) {
+            copy("git$dir/$file", "svn/$branch$dir/$file");
+            svn('add', "$branch$dir/$file");
+        } elsif (!$tfile->{file}) {
+            sync($branch, "$dir/$file");
+        } elsif (!$sfile->{file}) {
+            die "Unable to replace a file with a directory";
+        } elsif ($sfile->{size} != $tfile->{size}
+              or $sfile->{mtime} != $tfile->{mtime}) {
+            copy("git$dir/$file", "svn/$branch$dir/$file");
+        }
     }
 }
 
@@ -96,18 +117,25 @@ sub commit {
     }
 
     my $dir = $branches{$branch};
-    unless $dir {
+    unless ($dir) {
         $dir = "branches/$branch";
-        svn('mkdir', $dir);
+        my $r = $first->{revision};
+        my $b = $first->{branch};
+        svn('copy', '-r', $r, "$branches{$b}\@$r", $dir);
         $branches{$branch} = $dir;
-    };
-    chdir($dir) or die "chdir: $!";
+    }
 
-    sync(
-    $commit->{revision} = $i++;
+    git('checkout', $commit->{hash});
+    sync($dir, "");
+    svn('commit', '-m', $commit->{hash});
+
+    `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
+    my $revision = $1;
+
+    $commit->{revision} = $revision;
     $commit->{branch} = $branch;
 
     print "commit $commit->{revision} to branch $commit->{branch} at $commit->{date}: $commit->{hash}\n";
 }
 
-commit($commits{$first}, 'trunk');
+commit($commits{$head}, 'trunk');
