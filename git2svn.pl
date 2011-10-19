@@ -120,7 +120,7 @@ system('svn', 'checkout', "file://$pwd/repo", 'svn') == 0
 svn('mkdir', 'trunk');
 svn('mkdir', 'branches');
 svn('mkdir', 'tags');
-svn('commit', '-m', 'mkdir {trunk,branches,tags}');
+svn('commit', '--username', 'git2svn', '-m', 'mkdir {trunk,branches,tags}');
 
 sub listdir {
     my $dir = shift;
@@ -196,10 +196,17 @@ sub commit {
     svn('commit', '--username', $commit->{author}, '-m', $commit->{message});
 
     `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
-    $commit->{revision} = $1;
+    my $revision = $1;
+    $commit->{revision} = $revision;
 
-    svn('propset', '--revprop', '-r', $commit->{revision},
+    svn('propset', '--revprop', '-r', $revision,
         'svn:date', strftime('%Y-%m-%dT%H:%M:%S.000Z', gmtime($commit->{date})));
+
+    # TODO: Get tag date/author/message from annotated tags
+    for my $tag (@{$commit->{tags}}) {
+        svn('copy', $branch, "tags/$tag");
+        svn('commit', '--username', 'git2svn', '-m', "tag $tag");
+    }
 
     print "commit $commit->{revision} to branch $commit->{branch} at $commit->{date}: $commit->{hash}\n";
 }
