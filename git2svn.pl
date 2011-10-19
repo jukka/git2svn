@@ -25,6 +25,12 @@ sub run {
 
 sub git { run('git', @_); }
 sub svn { run('svn', @_); }
+sub normalize {
+    my $str = shift;
+    $str =~ s/[^0-9A-Za-z\.]+/_/g;
+    $str =~ s/^\.+_?/_/;
+    return $str;
+}
 
 system('git', 'clone', $GIT, 'git') == 0 or die "git clone: $?";
 
@@ -68,9 +74,9 @@ do {
         my ($hash, $ref) = split / /, $line;
         next unless exists $commits{$hash};
         if ($ref =~ m[^refs/tags/(.*)]) {
-            push @{$commits{$hash}->{tags}}, $1;
+            push @{$commits{$hash}->{tags}}, normalize($1);
         } elsif ($ref =~ m[^refs/remotes/origin/(.*)]) {
-            my $branch = $1;
+            my $branch = normalize($1);
             if ($branch eq 'master') {
                 $trunk = $commits{$hash};
             } elsif ($branch ne 'HEAD') {
