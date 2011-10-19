@@ -29,7 +29,8 @@ system('git', 'clone', $GIT, 'git') == 0 or die "git clone: $?";
 
 my %commits = ();
 my $trunk;
-my %banches = ();
+my %branches = ();
+my %extras = ();
 do {
     # Collect basic information about all reachable commits in the repository
     open GIT, 'GIT_DIR=git/.git git log --all --format=format:%H,%P,%ci |'
@@ -37,8 +38,6 @@ do {
     for my $line (<GIT>) {
         chomp $line;
         my ($hash, $parents, $date) = split /,/, $line;
-        $head = $hash unless $head;
-
         $commits{$hash} = {
             hash     => $hash,
             date     => $date,
@@ -82,7 +81,8 @@ do {
 
     # Map remaining commits to temporary branches
     for my $commit (sort { $b->{date} cmp $a->{date} } values %commits) {
-        set_linear_branch($commit, "branches/$commit->{hash}")
+        my $branch = "branches/$commit->{hash}";
+        $extras{$branch} = set_linear_branch($commit, $branch)
              unless $commit->{branch};
     }
 };
@@ -90,10 +90,13 @@ do {
 # Sets the branch mapping of all linear ancestors (following first parent)
 sub set_linear_branch {
     my ($commit, $branch) = @_;
+    my $n = 0;
     while ($commit and not $commit->{branch}) {
         $commit->{branch} = $branch;
         ($commit) = @{$commit->{parents}};
+        $n++;
     }
+    $n;
 }
 
 my $pwd = `pwd`;
@@ -107,8 +110,6 @@ svn('mkdir', 'trunk');
 svn('mkdir', 'branches');
 svn('mkdir', 'tags');
 svn('commit', '-m', 'mkdir {trunk,branches,tags}');
-
-my %branches = ( trunk => 'trunk' );
 
 sub listdir {
     my $dir = shift;
@@ -158,54 +159,37 @@ sub sync {
 
 sub commit {
     my $commit = shift;
-    my $branch = shift;
-    return if $commit->{revision};
-
     my ($first, @rest) = @{$commit->{parents}};
-    if ($first) {
-        commit($first, $branch);
-        for my $c (@rest) {
-            commit($c, $c->{hash});
-        }
-    }
 
-    my $dir = $branches{$branch};
-    unless ($dir) {
-        $dir = "branches/$branch";
+    my $dir = $commit->{branch};
+    unless (-d "svn/$dir") {
         if ($first) {
             my $r = $first->{revision};
             my $b = $first->{branch};
-            svn('copy', '-r', $r, "$branches{$b}\@$r", $dir);
+            svn('copy', '-r', $r, "^/$b\@$r", $dir);
         } else {
             svn('mkdir', $dir);
         }
-        $branches{$branch} = $dir;
     }
+    $extras{$dir}-- if exists $extras{$dir};
 
     git('checkout', $commit->{hash});
     sync($dir, "");
 
-    for my $c (@rest) {
-        my $removebranch = $c->{branch} ne 'trunk' and $c->{branch} ne $branch;
-        for my $child (@{$c->{children}}) {
-            $removebranch = 0
-                if $child->{hash} ne $commit->{hash} and not $child->{revision};
-        }
-        if ($removebranch) {
-            svn('delete', $branches{$c->{branch}});
-            delete $branches{$c->{branch}};
-        }
+    for my $parent (@rest) {
+        my $branch = $parent->{branch};
+        svn('delete', $branch)
+            if exists $extras{$branch} and not $extras{$branch};
     }
     
     svn('commit', '-m', $commit->{hash});
 
     `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
-    my $revision = $1;
-
-    $commit->{revision} = $revision;
-    $commit->{branch} = $branch;
+    $commit->{revision} = $1;
 
     print "commit $commit->{revision} to branch $commit->{branch} at $commit->{date}: $commit->{hash}\n";
 }
 
-commit($commits{$head}, 'trunk');
+for my $commit (sort { $a->{date} cmp $b->{date} } values %commits) {
+    commit($commit);
+}
