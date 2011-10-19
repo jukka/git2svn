@@ -3,6 +3,8 @@
 use strict;
 use warnings;
 
+use POSIX qw(strftime);
+
 my $GIT = shift;
 my $SVN = shift;
 
@@ -33,14 +35,19 @@ my %branches = ();
 my %extras = ();
 do {
     # Collect basic information about all reachable commits in the repository
-    open GIT, 'GIT_DIR=git/.git git log --all --format=format:%H,%P,%ci |'
+    open GIT, 'GIT_DIR=git/.git git log --all --format=format:%H,%P,%at,%ae|'
         or die "git log: $!";
     for my $line (<GIT>) {
         chomp $line;
-        my ($hash, $parents, $date) = split /,/, $line;
+        my ($hash, $parents, $date, $author) = split /,/, $line, 4;
+        my $message = `GIT_DIR=git/.git git log -1 --format=format:%B $hash`
+            or die "git log: $!";
+        chomp($message);
         $commits{$hash} = {
             hash     => $hash,
-            date     => $date,
+            date     => $date + 0,
+            author   => $author,
+            message  => $message,
             parents  => [ split / /, $parents ],
             branch   => '',
             tags     => [],
@@ -80,7 +87,7 @@ do {
     }
 
     # Map remaining commits to temporary branches
-    for my $commit (sort { $b->{date} cmp $a->{date} } values %commits) {
+    for my $commit (sort { $b->{date} <=> $a->{date} } values %commits) {
         my $branch = "branches/$commit->{hash}";
         $extras{$branch} = set_linear_branch($commit, $branch)
              unless $commit->{branch};
@@ -103,6 +110,10 @@ my $pwd = `pwd`;
 chomp($pwd);
 system('svnadmin', 'create', 'repo') == 0
     or die "svnadmin create: $?";
+open HOOK, '>repo/hooks/pre-revprop-change' or die "open: $!";
+print HOOK "#!/bin/sh\nexit 0\n";
+close HOOK;
+chmod 0755, 'repo/hooks/pre-revprop-change' or die "chmod: $!";
 system('svn', 'checkout', "file://$pwd/repo", 'svn') == 0
     or die "svn checkout: $?";
 
@@ -161,35 +172,38 @@ sub commit {
     my $commit = shift;
     my ($first, @rest) = @{$commit->{parents}};
 
-    my $dir = $commit->{branch};
-    unless (-d "svn/$dir") {
-        if ($first) {
+    my $branch = $commit->{branch};
+    unless (-d "svn/$branch") {
+        if ($first and $first->{revision}) {
             my $r = $first->{revision};
             my $b = $first->{branch};
-            svn('copy', '-r', $r, "^/$b\@$r", $dir);
+            svn('copy', '-r', $r, "^/$b\@$r", $branch);
         } else {
-            svn('mkdir', $dir);
+            svn('mkdir', $branch);
         }
     }
-    $extras{$dir}-- if exists $extras{$dir};
+    $extras{$branch}-- if exists $extras{$branch};
 
     git('checkout', $commit->{hash});
-    sync($dir, "");
+    sync($branch, "");
 
     for my $parent (@rest) {
-        my $branch = $parent->{branch};
-        svn('delete', $branch)
-            if exists $extras{$branch} and not $extras{$branch};
+        my $pb = $parent->{branch};
+        svn('delete', $pb)
+            if -d "svn/$pb" and exists $extras{$pb} and not $extras{$pb};
     }
-    
-    svn('commit', '-m', $commit->{hash});
+
+    svn('commit', '--username', $commit->{author}, '-m', $commit->{message});
 
     `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
     $commit->{revision} = $1;
 
+    svn('propset', '--revprop', '-r', $commit->{revision},
+        'svn:date', strftime('%Y-%m-%dT%H:%M:%S.000Z', gmtime($commit->{date})));
+
     print "commit $commit->{revision} to branch $commit->{branch} at $commit->{date}: $commit->{hash}\n";
 }
 
-for my $commit (sort { $a->{date} cmp $b->{date} } values %commits) {
+for my $commit (sort { $a->{date} <=> $b->{date} } values %commits) {
     commit($commit);
 }
