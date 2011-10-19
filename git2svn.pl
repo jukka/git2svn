@@ -59,8 +59,8 @@ do {
     for my $line (<GIT>) {
         chomp $line;
         my ($hash, $ref) = split / /, $line;
+        next unless exists $commits{$hash};
         if ($ref =~ m[^refs/tags/(.*)]) {
-            # Record tag information
             push @{$commits{$hash}->{tags}}, $1;
         } elsif ($ref =~ m[^refs/remotes/origin/(.*)]) {
             my $branch = $1;
