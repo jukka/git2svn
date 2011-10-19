@@ -5,8 +5,7 @@ use warnings;
 
 use POSIX qw(strftime);
 
-my $GIT = shift;
-my $SVN = shift;
+my ($GIT, %authors) = @ARGV;
 
 sub run {
     my ($cmd, @args) = @_;
@@ -40,6 +39,7 @@ do {
     for my $line (<GIT>) {
         chomp $line;
         my ($hash, $parents, $date, $author) = split /,/, $line, 4;
+        $author = $authors{$author} if exists $authors{$author};
         my $message = `GIT_DIR=git/.git git log -1 --format=format:%B $hash`
             or die "git log: $!";
         chomp($message);
@@ -196,16 +196,20 @@ sub commit {
     svn('commit', '--username', $commit->{author}, '-m', $commit->{message});
 
     `cd svn; svn update` =~ /revision (\d+)/ or die "Unknown svn revision";
-    my $revision = $1;
-    $commit->{revision} = $revision;
+    $commit->{revision} = $1;
 
-    svn('propset', '--revprop', '-r', $revision,
+    svn('propset', '--revprop', '-r', $commit->{revision},
         'svn:date', strftime('%Y-%m-%dT%H:%M:%S.000Z', gmtime($commit->{date})));
 
     # TODO: Get tag date/author/message from annotated tags
     for my $tag (@{$commit->{tags}}) {
-        svn('copy', $branch, "tags/$tag");
+        if (exists $extras{$branch} and not $extras{$branch}) {
+            svn('move', $branch, "tags/$tag");
+        } else {
+            svn('copy', $branch, "tags/$tag");
+        }
         svn('commit', '--username', 'git2svn', '-m', "tag $tag");
+        svn('update');
     }
 
     print "commit $commit->{revision} to branch $commit->{branch} at $commit->{date}: $commit->{hash}\n";
