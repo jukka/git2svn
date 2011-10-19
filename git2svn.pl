@@ -25,38 +25,83 @@ sub run {
 sub git { run('git', @_); }
 sub svn { run('svn', @_); }
 
-system('git', 'clone', $GIT, 'git') == 0 or die "git: $?";
+system('git', 'clone', $GIT, 'git') == 0 or die "git clone: $?";
 
 my %commits = ();
-my $head;
-open LOG, '(GIT_DIR=git/.git git log --format=format:%H,%P,%ci)|'
-    or die "open: $!";
-for my $log (<LOG>) {
-    chomp $log;
-    my ($hash, $parents, $date) = split /,/, $log;
-    $head = $hash unless $head;
+my $trunk;
+my %banches = ();
+do {
+    # Collect basic information about all reachable commits in the repository
+    open GIT, 'GIT_DIR=git/.git git log --all --format=format:%H,%P,%ci |'
+        or die "git log: $!";
+    for my $line (<GIT>) {
+        chomp $line;
+        my ($hash, $parents, $date) = split /,/, $line;
+        $head = $hash unless $head;
 
-    $commits{$hash} = {
-        hash => $hash,
-        date => $date,
-        parents => [ split / /, $parents ],
-        children => []
-    };
-}
-for my $commit (values %commits) {
-    $commit->{parents} = [ map { $commits{$_} } @{$commit->{parents}} ];
-}
-for my $commit (values %commits) {
-    for my $parent (@{$commit->{parents}}) {
-        push @{$parent->{children}}, $commit;
+        $commits{$hash} = {
+            hash     => $hash,
+            date     => $date,
+            parents  => [ split / /, $parents ],
+            branch   => '',
+            tags     => [],
+            revision => 0
+        };
+    }
+    close GIT;
+
+    # Replace parent hashes with references to the commit objects
+    for my $commit (values %commits) {
+        $commit->{parents} = [ map { $commits{$_} } @{$commit->{parents}} ];
+    }
+
+    # Collect information about branches and tags
+    open GIT, 'GIT_DIR=git/.git git show-ref |' or die "git show-ref: $!";
+    for my $line (<GIT>) {
+        chomp $line;
+        my ($hash, $ref) = split / /, $line;
+        if ($ref =~ m[^refs/tags/(.*)]) {
+            # Record tag information
+            push @{$commits{$hash}->{tags}}, $1;
+        } elsif ($ref =~ m[^refs/remotes/origin/(.*)]) {
+            my $branch = $1;
+            if ($branch eq 'master') {
+                $trunk = $commits{$hash};
+            } elsif ($branch ne 'HEAD') {
+                $branches{$branch} = $commits{$hash};
+            }
+        }
+    }
+    close GIT;
+
+    # Map commits to the main branch lines
+    set_linear_branch($trunk, 'trunk') if $trunk;
+    for my $branch (keys %branches) {
+        set_linear_branch($branches{$branch}, "branches/$branch");
+    }
+
+    # Map remaining commits to temporary branches
+    for my $commit (sort { $b->{date} cmp $a->{date} } values %commits) {
+        set_linear_branch($commit, "branches/$commit->{hash}")
+             unless $commit->{branch};
+    }
+};
+
+# Sets the branch mapping of all linear ancestors (following first parent)
+sub set_linear_branch {
+    my ($commit, $branch) = @_;
+    while ($commit and not $commit->{branch}) {
+        $commit->{branch} = $branch;
+        ($commit) = @{$commit->{parents}};
     }
 }
-close LOG;
 
 my $pwd = `pwd`;
 chomp($pwd);
-system('svnadmin', 'create', 'repo') == 0 or die "svnadmin: $?";
-system('svn', 'checkout', "file://$pwd/repo", 'svn') == 0 or die "svn: $?";
+system('svnadmin', 'create', 'repo') == 0
+    or die "svnadmin create: $?";
+system('svn', 'checkout', "file://$pwd/repo", 'svn') == 0
+    or die "svn checkout: $?";
 
 svn('mkdir', 'trunk');
 svn('mkdir', 'branches');
