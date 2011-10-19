@@ -5,7 +5,7 @@ use warnings;
 
 use POSIX qw(strftime);
 
-my ($GIT, %authors) = @ARGV;
+my ($GIT, $SVN, %authors) = @ARGV;
 
 sub run {
     my ($cmd, @args) = @_;
@@ -218,3 +218,5 @@ sub commit {
 for my $commit (sort { $a->{date} <=> $b->{date} } values %commits) {
     commit($commit);
 }
+
+system("svnadmin dump repo | gzip > $SVN") == 0 or die "svnadmin dump: $?";
